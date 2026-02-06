@@ -1,41 +1,142 @@
-# Nostr Auto-Reply Daemon
+# Nostr Auto-Reply Daemon for OpenClaw
 
-Standalone Node.js daemon for Nostr DMs with intelligent auto-reply functionality. Control your Mac remotely via encrypted Nostr DMs while traveling.
+**Drop-in replacement for the official OpenClaw Nostr channel plugin** — enables encrypted DMs and intelligent auto-reply functionality with full integration into OpenClaw's configuration system.
 
-## Features
+## Overview
 
-- **Smart Auto-Reply**: Responds to trigger words for remote control
-- **Per-Sender Tracking**: Only one reply per DM conversation (prevents spam)
-- **Conversation Timeout**: Resets after 1 hour of inactivity (allows new conversations)
-- **Task Verification**: Checks OpenClaw status and mentions it in replies
-- **NIP-04/NIP-44/NIP-59**: Supports all major Nostr encryption formats including gift wrap
-- **Intelligent Rate Limiting**: Exponential backoff with jitter (2s→4s→8s→16s, capped at 30s)
-- **Per-Relay Tracking**: Auto-blacklists failing relays after 5 consecutive failures
-- **7-Relay Redundancy**: Default config uses multiple relays for reliability
-- **Useful Status Info**: Includes stats and task status in auto-replies
+This plugin acts as a complete replacement for the official OpenClaw Nostr channel plugin. It:
+- Reads configuration directly from `openclaw.json` (Channels > Nostr section in the web dashboard)
+- Enables encrypted DM support via NIP-04
+- Provides intelligent auto-reply to trigger words
+- Checks OpenClaw gateway status and includes it in replies
+- Supports the full allowlist system from the dashboard
 
-## Quick Start
+## Installation
 
-1. Install dependencies:
+### 1. Clone or download this plugin
+
 ```bash
-cd ~/.openclaw/workspace
+cd ~/.openclaw/services
+git clone https://github.com/dubzrn/nostr-openclaw-dm-plugin.git nostr-dm
+```
+
+### 2. Install dependencies
+
+```bash
+cd ~/.openclaw/services/nostr-dm
 npm install nostr-tools
 ```
 
-2. Generate keypair (if you don't have one):
-```bash
-node generate-nostr-keypair.js
+### 3. Configure OpenClaw
+
+Edit `~/.openclaw/openclaw.json` and add/update the Nostr channel configuration:
+
+```json
+{
+  "channels": {
+    "entries": {
+      "nost": {
+        "enabled": true,
+        "privateKey": "${OPENCLAW_NOSTR_PRIVATE_KEY}",
+        "relays": [
+          "wss://relay.damus.io",
+          "wss://relay.primal.net",
+          "wss://nos.lol"
+        ],
+        "dmPolicy": "allowlist",
+        "allowFrom": ["npub1..."],
+        "name": "0p3ncl4w",
+        "profile": {
+          "name": "0p3ncl4w",
+          "displayName": "0p3ncl4w",
+          "about": "AI assistant powered by OpenClaw."
+        }
+      }
+    }
+  },
+  "env": {
+    "OPENCLAW_NOSTR_PRIVATE_KEY": "nsec1...",
+    "OPENCLAW_NOSTR_PUBLIC_WHITELIST_KEY": "npub1..."
+  }
+}
 ```
 
-3. Edit `auto-reply-daemon.js` and set your private key:
-```javascript
-const PRIVATE_KEY = 'your_hex_private_key';  // REQUIRED
-const SENDER_PUBKEY = 'all';  // Optional: 'all' for anyone, or specific npub
-```
+**Note:** The official Nostr plugin should be disabled or uninstalled. This plugin overrides it completely.
 
-4. Start the daemon:
+### 4. Start the daemon
+
 ```bash
 cd ~/.openclaw/services/nostr-dm
+node auto-reply-daemon-openclaw.js
+```
+
+You should see:
+
+```
+✓ Loaded Nostr configuration from openclaw.json
+  Policy: allowlist
+  Relays: 7 configured
+  Allowed senders: 1 specific
+  My npub: npub1...
+Listening for DMs...
+```
+
+## Configuration
+
+### OpenClaw Integration
+
+The `auto-reply-daemon-openclaw.js` daemon reads its configuration from your OpenClaw config:
+
+| Config Key | Source | Description |
+|-----------|--------|-------------|
+| `privateKey` | `channels.nost.privateKey` → `OPENCLAW_NOSTR_PRIVATE_KEY` env var | Your Nostr private key (nsec or hex) |
+| `relays` | `channels.nost.relays` (defaults to 7 relays) | Array of WebSocket relay URLs |
+| `dmPolicy` | `channels.nost.dmPolicy` | `allowlist`, `pairing`, `open`, or `disabled` |
+| `allowFrom` | `channels.nost.allowFrom` | Array of allowed pubkeys (npub or hex) |
+| `enabled` | `channels.nost.enabled` | Enable/disable the channel |
+| `name` | `channels.nost.name` | Display name for auto-replies |
+
+### DM Policies
+
+- **allowlist**: Only senders in `allowFrom` can DM (recommended)
+- **pairing**: Unknown senders get a pairing code (not implemented in this daemon yet)
+- **open**: Anyone can DM (`allowFrom: ["*"]`)
+- **disabled**: Ignore all DMs
+
+### Managing Allowlist
+
+Add or remove users from the allowlist in `openclaw.json`:
+
+```json
+{
+  "channels": {
+    "entries": {
+      "nost": {
+        "allowFrom": [
+          "npub1330qncw39qmyqh0g25uxh0d0ct03zvf2pkpzup0ltecsksaxerxq302nwf",
+          "npub1abc...your-friend-npub..."
+        ]
+      }
+    }
+  }
+}
+```
+
+After editing, restart the daemon to pick up changes.
+
+## Standalone Mode (No OpenClaw Integration)
+
+If you want to run this daemon without OpenClaw's config system, use `auto-reply-daemon.js` instead:
+
+1. Edit `auto-reply-daemon.js` and set the config at the top:
+```javascript
+const PRIVATE_KEY_HEX = 'your_hex_private_key_here';
+const SENDER_PUBKEY = 'all'; // or specific npub
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
+```
+
+2. Run:
+```bash
 node auto-reply-daemon.js
 ```
 

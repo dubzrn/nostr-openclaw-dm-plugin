@@ -218,11 +218,13 @@ function getNostrConfig() {
     let allowedSenders = [];
     if (dmPolicy === 'allowlist' && nostrChannel.allowFrom) {
       allowedSenders = deduplicatePubkeys(nostrChannel.allowFrom);
+      console.log(`  ℹ️  Allowlist configured: ${nostrChannel.allowFrom.length} pubkeys → ${allowedSenders.length} unique`);
       if (allowedSenders.length !== nostrChannel.allowFrom.length) {
         console.log(`  ℹ️  Pubkey deduplication: ${nostrChannel.allowFrom.length} → ${allowedSenders.length} unique pubkeys`);
       }
     } else if (dmPolicy === 'open' || dmPolicy === 'pairing') {
       allowedSenders = ['*']; // Allow anyone
+      console.log(`  ℹ️  Policy: ${dmPolicy} (anyone can DM)`);
     }
 
     return {
@@ -264,6 +266,9 @@ if (!config.enabled) {
 const PRIVATE_KEY_HEX = config.privateKey;
 const RELAYS = config.relays;
 const ALLOWED_SENDERS = config.allowedSenders;
+
+// Debug logging for config
+console.log(`  Config loaded - Allowed senders: ${ALLOWED_SENDERS.length}`);
 
 // Auto-reply triggers (for basic auto-reply, not commands)
 const AUTO_REPLY_TRIGGERS = ['patch-in', 'test', 'hello', 'hi', 'howdy', 'ping', 'dm', 'check', 'verify'];
@@ -517,13 +522,13 @@ async function handleRelaysCommand() {
         const myPubkey = getPublicKey(PRIVATE_KEY_HEX);
 
         // Simple health check: query for recent DMs to our pubkey
-        const events = await pool.list(
+        const events = await pool.querySync(
           [relayUrl],
-          [{
+          {
             kinds: [4],
             '#p': [myPubkey],
             limit: 1
-          }]
+          }
         );
 
         const latency = Date.now() - startTime;
@@ -1020,15 +1025,13 @@ async function main() {
   setInterval(async () => {
     try {
       // Fetch DMs (kind:4) from relays
-      const events = await pool.list(
+      const events = await pool.querySync(
         RELAYS,
-        [
-          {
-            kinds: [4],
-            authors: ALLOWED_SENDERS.includes('*') ? undefined : ALLOWED_SENDERS,
-            '#p': [myPubkey]
-          }
-        ]
+        {
+          kinds: [4],
+          authors: ALLOWED_SENDERS.includes('*') ? undefined : ALLOWED_SENDERS,
+          '#p': [myPubkey]
+        }
       );
 
       // Deduplicate events by ID (same event from multiple relays)

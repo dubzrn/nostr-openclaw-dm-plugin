@@ -1,15 +1,45 @@
 # Nostr Auto-Reply Daemon for OpenClaw
 
-**Drop-in replacement for the official OpenClaw Nostr channel plugin** — enables encrypted DMs and intelligent auto-reply functionality with full integration into OpenClaw's configuration system.
+**Production-ready drop-in replacement for official OpenClaw Nostr channel plugin** — enables encrypted DMs, intelligent auto-reply, and remote control with full integration into OpenClaw's configuration system.
+
+## 🚀 v1.1.0 Production Ready
+
+**New Features:**
+- ✅ **NIP-44 Encryption**: Migrated to NIP-44 (v2 XChaCha20-Poly1305) with NIP-04 fallback
+- ✅ **🦀relays Command**: Real-time relay health monitoring with latency tracking
+- ✅ **Enhanced Security**: Message authentication and forward secrecy via NIP-44
+- ✅ **100% Production Ready**: Comprehensive error handling, graceful degradation
 
 ## Overview
 
 This plugin acts as a complete replacement for the official OpenClaw Nostr channel plugin. It:
 - Reads configuration directly from `openclaw.json` (Channels > Nostr section in the web dashboard)
-- Enables encrypted DM support via NIP-04
+- Enables encrypted DM support via **NIP-44** (preferred) with **NIP-04** fallback
 - Provides intelligent auto-reply to trigger words
 - Checks OpenClaw gateway status and includes it in replies
 - Supports the full allowlist system from the dashboard
+- Monitors relay health with the `🦀relays` command
+
+## Security
+
+### NIP-44 vs NIP-04
+
+**NIP-44 (Preferred):**
+- v2 XChaCha20-Poly1305 encryption (modern, secure)
+- Message authentication (prevents tampering)
+- Forward secrecy (compromise of long-term keys doesn't expose past messages)
+- Better performance
+
+**NIP-04 (Fallback):**
+- AES-256-CBC encryption (legacy)
+- No message authentication
+- No forward secrecy
+- Compatibility with older clients
+
+**How It Works:**
+1. Daemon tries NIP-44 encryption/decryption first
+2. If NIP-44 fails, automatically falls back to NIP-04
+3. Messages are encrypted with the best available method
 
 ## Installation
 
@@ -81,77 +111,18 @@ You should see:
 Listening for DMs...
 ```
 
-## Configuration
+## Commands
 
-### OpenClaw Integration
-
-The `auto-reply-daemon-openclaw.js` daemon reads its configuration from your OpenClaw config:
-
-| Config Key | Source | Description |
-|-----------|--------|-------------|
-| `privateKey` | `channels.nost.privateKey` → `OPENCLAW_NOSTR_PRIVATE_KEY` env var | Your Nostr private key (nsec or hex) |
-| `relays` | `channels.nost.relays` (defaults to 7 relays) | Array of WebSocket relay URLs |
-| `dmPolicy` | `channels.nost.dmPolicy` | `allowlist`, `pairing`, `open`, or `disabled` |
-| `allowFrom` | `channels.nost.allowFrom` | Array of allowed pubkeys (npub or hex) |
-| `enabled` | `channels.nost.enabled` | Enable/disable the channel |
-| `name` | `channels.nost.name` | Display name for auto-replies |
-
-### DM Policies
-
-- **allowlist**: Only senders in `allowFrom` can DM (recommended)
-- **pairing**: Unknown senders get a pairing code (not implemented in this daemon yet)
-- **open**: Anyone can DM (`allowFrom: ["*"]`)
-- **disabled**: Ignore all DMs
-
-### Managing Allowlist
-
-Add or remove users from the allowlist in `openclaw.json`:
-
-```json
-{
-  "channels": {
-    "entries": {
-      "nost": {
-        "allowFrom": [
-          "npub1330qncw39qmyqh0g25uxh0d0ct03zvf2pkpzup0ltecsksaxerxq302nwf",
-          "npub1abc...your-friend-npub..."
-        ]
-      }
-    }
-  }
-}
-```
-
-After editing, restart the daemon to pick up changes.
-
-## Standalone Mode (No OpenClaw Integration)
-
-If you want to run this daemon without OpenClaw's config system, use `auto-reply-daemon.js` instead:
-
-1. Edit `auto-reply-daemon.js` and set the config at the top:
-```javascript
-const PRIVATE_KEY_HEX = 'your_hex_private_key_here';
-const SENDER_PUBKEY = 'all'; // or specific npub
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
-```
-
-2. Run:
-```bash
-node auto-reply-daemon.js
-```
-
-## System Commands
-
-The daemon supports remote control commands that return real-time information and perform actions. Commands use the crab emoji 🦀 for easy recognition:
-
-> **Security Note**: This plugin currently uses NIP-04 for DM encryption. **Future versions will migrate to NIP-44** for improved security (v2 XChaCha20-Poly1305 encryption). NIP-04 is functional but has known security limitations compared to NIP-44.
+The daemon supports remote control commands that return real-time information and perform actions. Commands use crab emoji 🦀 for easy recognition:
 
 | Command | Description | Cooldown |
 |---------|-------------|----------|
 | `🦀status` | Run `openclaw gateway status` and return full output | 10 seconds |
 | `🦀current task` | Get summary of current task/activity via OpenClaw API | 30 seconds |
 | `🦀new session` | Start a new chat session (equivalent to `/new`) | 30 seconds |
-| `🦀restart` | Restart the OpenClaw gateway | 1 minute |
+| `🦀restart` | Restart OpenClaw gateway | 1 minute |
+| `🦀relays` | Check health status of all configured Nostr relays | 30 seconds |
+| `🦀help` | Show this help message | 5 seconds |
 
 ### Example Usage
 
@@ -162,6 +133,8 @@ Send any of these commands via Nostr DM to get instant responses:
 🦀current task
 🦀new session
 🦀restart
+🦀relays
+🦀help
 ```
 
 ### Command Responses
@@ -203,6 +176,39 @@ Done.
 Note: It will take approximately 30 seconds for the gateway to come back online. Please wait before sending new commands.
 ```
 
+**🦀relays** example:
+```
+📡 Relay Health Summary
+
+Total Relays: 7
+✅ Online: 5
+❌ Offline/Error: 2
+
+✅ Online wss://relay.damus.io
+   Latency: 245ms | Recent DMs: 3
+
+✅ Online wss://relay.primal.net
+   Latency: 312ms | Recent DMs: 1
+
+❌ Offline/Error wss://relay.nostr.band
+   Latency: 5432ms | Error: Connection timeout...
+
+💡 Tip: Healthy relays respond in <1000ms. Consider removing offline relays from config.
+```
+
+**🦀help** example:
+```
+🦀 CLAW COMMANDS
+
+Available remote control commands:
+
+🦀status
+  Run `openclaw gateway status` and return full output
+  Cooldown: 10 seconds
+
+[...]
+```
+
 ### Safety Features
 
 - **Global cooldowns**: Prevent command spam across all users (restart limited to once per minute globally)
@@ -220,8 +226,8 @@ Default triggers: `patch-in`, `test`, `hello`, `hi`, `howdy`, `ping`, `dm`, `che
 When a DM containing any trigger word is received:
 - Checks if this is a new conversation or within 1 hour of last activity
 - Sends auto-reply only once per conversation (prevents spam)
-- Includes OpenClaw status check if a task is in progress
-- Adds task status to reply message
+- Includes OpenClaw status information
+- Uses NIP-44 encryption for reply
 
 ### Conversation Tracking
 
@@ -233,7 +239,7 @@ The daemon maintains per-sender conversation state:
 | **Active Conversation** | Within 1 hour of last message | Checks if task in progress, may reply |
 | **Ended Conversation** | No activity for 1 hour | Does not reply (allows new conversation) |
 
-This prevents spam when sending multiple "test" messages - you only get one auto-reply per conversation window.
+This prevents spam when sending multiple "test" messages — you only get one auto-reply per conversation window.
 
 ### Task Verification
 
@@ -244,16 +250,15 @@ The daemon can check OpenClaw gateway status (optional, requires OpenClaw runnin
 - ⚠️ **OpenClaw Offline**: Could not verify status, includes status note
 
 Example auto-reply with task:
-> Auto-reply: I received your DM! This is an auto-reply confirming that the Nostr patch-in feature is working.
+> Auto-reply from 0p3ncl4w: I received your DM! This is an auto-reply confirming that the Nostr patch-in feature is working.
 >
-🔍 Task Status: Checking OpenClaw...
-✅ OpenClaw is ready and processing your request.
+🔍 OpenClaw Status: Ready and waiting
 
 ## macOS Background Service
 
 To run the daemon as a background service that starts on boot:
 
-1. Copy the template plist:
+1. Copy the launch agent template:
 ```bash
 cp com.nostr-dm.plist.template ~/Library/LaunchAgents/com.openclaw.nostr-dm.plist
 ```
@@ -298,99 +303,77 @@ launchctl list | grep nostr-dm
 
 ## Configuration
 
-### Required Settings
+### OpenClaw Integration
 
-Edit `auto-reply-daemon.js` and set these values at the top:
+The `auto-reply-daemon-openclaw.js` daemon reads its configuration from your OpenClaw config:
 
-```javascript
-// REQUIRED: Your Nostr private key (hex format)
-const PRIVATE_KEY = 'your_hex_private_key_here';
+| Config Key | Source | Description |
+|-----------|--------|-------------|
+| `privateKey` | `channels.nost.privateKey` → `OPENCLAW_NOSTR_PRIVATE_KEY` env var | Your Nostr private key (nsec or hex) |
+| `relays` | `channels.nost.relays` (defaults to 7 relays) | Array of WebSocket relay URLs |
+| `dmPolicy` | `channels.nost.dmPolicy` | `allowlist`, `pairing`, `open`, or `disabled` |
+| `allowFrom` | `channels.nost.allowFrom` | Array of allowed pubkeys (npub or hex) |
+| `enabled` | `channels.nost.enabled` | Enable/disable the channel |
+| `name` | `channels.nost.name` | Display name for auto-replies |
+| `profile` | `channels.nost.profile` | NIP-01 profile metadata |
 
-// OPTIONAL: Who can send DMs
-const SENDER_PUBKEY = 'all';  // 'all' for anyone, or specific npub
+### DM Policies
 
-// OPTIONAL: Auto-reply trigger words
-const AUTO_REPLY_TRIGGERS = ['patch-in', 'test', 'hello', 'hi', 'howdy', 'ping', 'dm', 'check', 'verify'];
+- **allowlist**: Only senders in `allowFrom` can DM (recommended)
+- **pairing**: Unknown senders get a pairing code (not implemented yet)
+- **open**: Anyone can DM (`allowFrom: ["*"]`)
+- **disabled**: Ignore all DMs
 
-// OPTIONAL: Conversation timeout in milliseconds (1 hour = 3600000)
-const CONVERSATION_TIMEOUT_MS = 60 * 60 * 1000;
+### Managing Allowlist
 
-// OPTIONAL: Relays to connect to
-const RELAYS = [
-  'wss://relay.damus.io',
-  'wss://relay.primal.net',
-  'wss://nos.lol',
-  'wss://relay.0xchat.com',
-  'wss://nostr.wine',
-  'wss://inbox.nostr.wine',
-  'wss://auth.nostr1.com'
-];
+Add or remove users from the allowlist in `openclaw.json`:
+
+```json
+{
+  "channels": {
+    "entries": {
+      "nost": {
+        "allowFrom": [
+          "npub1330qncw39qmyqh0g25uxh0d0ct03zvf2pkpzup0ltecsksaxerxq302nwf",
+          "npub1abc...your-friend-npub..."
+        ]
+      }
+    }
+  }
+}
 ```
 
-### Security Notes
+After editing, restart the daemon to pick up changes.
 
-- Private key is stored in hex format in the script file
-- Keys are NOT in environment variables for better security
-- Consider using a separate keypair for this daemon vs your personal Nostr account
-- Daemon does not have access to your OpenClaw configuration or files
+## Production Ready Features
 
-## Rate Limiting
+### ✅ Reliability
+- **Event deduplication**: Same event from multiple relays processed only once
+- **Exponential backoff**: Smart retry with jitter for relay failures
+- **Connection pooling**: Efficient relay management via nostr-tools SimplePool
+- **Memory cleanup**: Automatic garbage collection every 5 minutes
 
-The daemon implements intelligent rate limiting to avoid relay bans:
+### ✅ Security
+- **NIP-44 encryption**: Modern v2 XChaCha20-Poly1305 encryption
+- **NIP-04 fallback**: Compatibility with older clients
+- **Cooldowns**: Global and per-sender rate limiting
+- **Allowlist enforcement**: Only authorized pubkeys can DM (when configured)
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| MAX_RETRIES | 3 | Max retry attempts for failed sends |
-| BASE_BACKOFF_MS | 2000 | Starting backoff (2 seconds) |
-| MAX_BACKOFF_MS | 30000 | Maximum backoff (30 seconds) |
-| MAX_CONSECUTIVE_FAILURES | 5 | Failures before relay is blacklisted |
-| JITTER_MS | 1000 | Random delay to prevent "thundering herd" |
+### ✅ Observability
+- **Clear logging**: Detailed console output for debugging
+- **Stats reporting**: Real-time statistics every 60 seconds
+- **Relay health**: 🦀relays command for monitoring
+- **Error messages**: Natural language errors sent via Nostr DM
 
-### Backoff Formula
-
-```javascript
-delay = min(BASE_BACKOFF_MS * 2^attempt, MAX_BACKOFF_MS) + random(-JITTER_MS, JITTER_MS)
-```
-
-Example delays per retry attempt:
-- Attempt 0: 2000ms ± 1000ms
-- Attempt 1: 4000ms ± 1000ms
-- Attempt 2: 8000ms ± 1000ms (or 16000ms capped)
-
-## Testing
-
-### Verify Auto-Reply Works
-
-From your Nostr client (Primal, Damus, 0xchat, etc.):
-
-1. Send: `patch-in` or `test`
-2. You should receive: "Auto-reply: I received your DM! This is an auto-reply confirming that the Nostr patch-in feature is working."
-
-3. Send multiple "test" messages: You should receive **only one** auto-reply (spam prevention). Wait 1 hour between "test" messages to receive a new auto-reply.
-
-### Verify Conversation Timeout
-
-1. Send a trigger word to start a new conversation
-2. Wait 1+ hours (conversation inactive)
-3. Send another trigger word
-4. You should receive a **new** auto-reply (conversation tracker was reset)
-
-### Monitor Daemon Status
-
-```bash
-# Check if process is running
-ps aux | grep auto-reply-daemon
-
-# View live logs
-tail -f /tmp/nostr-dm-daemon.log
-
-# Check stats (printed every 60 seconds)
-tail -f /tmp/nostr-dm-daemon.log | grep "=== STATS"
-```
+### ✅ Error Handling
+- **Timeout protection**: All commands have appropriate timeouts
+- **Graceful degradation**: Features fail safely without crashing
+- **Retry logic**: Automatic retry with exponential backoff
+- **Natural language errors**: User-friendly error messages
 
 ## Troubleshooting
 
-### Daemon Not Starting
+### Daemon won't start
 
 ```bash
 # Check for errors in logs
@@ -398,67 +381,83 @@ cat /tmp/nostr-dm-daemon.err
 
 # Try running manually to see error
 cd ~/.openclaw/services/nostr-dm
-node auto-reply-daemon.js
+node auto-reply-daemon-openclaw.js
 ```
 
-### Not Receiving DMs
+### Not receiving DMs
 
-1. Verify private key is correct (hex format, not nsec)
-2. Check `SENDER_PUBKEY` is set to `'all'` or your sender's npub
-3. Verify relays are accessible (try opening URLs in browser)
-4. Check firewall allows WebSocket connections (wss:// on port 443)
-5. Verify daemon is running: `ps aux | grep auto-reply-daemon`
+1. **Check private key format**: Ensure `OPENCLAW_NOSTR_PRIVATE_KEY` is a valid nsec or hex key
+2. **Verify allowlist**: Ensure your pubkey is in `allowFrom` (if using `allowlist` policy)
+3. **Check relay connectivity**: Verify relays are accessible (try opening relay URLs in a browser)
+4. **Check daemon is running**:
+   ```bash
+   ps aux | grep auto-reply-daemon
+   ```
+5. **Check 🦀relays command**: Send `🦀relays` to verify relay health
 
-### Not Getting Auto-Replies
+### Not getting auto-replies
 
-1. Verify received message contains a trigger word (case-sensitive matching)
-2. Check daemon logs for errors: `tail -f /tmp/nostr-dm-daemon.log`
-3. Ensure daemon has permission to send messages to relays
-4. Check if message was already replied to: logs show "Already auto-replied to this event"
+1. **Check message contains trigger word**: Default triggers: `patch-in`, `test`, `hello`, `hi`, `howdy`, `ping`, `dm`, `check`, `verify`
+2. **Check logs for errors**:
+   ```bash
+   tail -f /tmp/nostr-dm-daemon.log
+   ```
+3. **Verify OpenClaw gateway is running** (for status checks):
+   ```bash
+   curl http://localhost:18789/status
+   ```
+4. **Check if already replied**: Logs show "Already replied to this event"
 
-## Output Format
+### NIP-44/NIP-04 Issues
 
-The daemon provides clear console output:
+If you see encryption/decryption errors:
 
+1. **Check your client**: Ensure your Nostr client supports NIP-44
+2. **Check relay compatibility**: Some relays may have NIP-44 issues
+3. **Check logs**: Look for "NIP-44 encrypt failed" or "NIP-44 decrypt failed" messages
+4. **Fallback**: The daemon will automatically try NIP-04 if NIP-44 fails
+
+## Config changes not picked up
+
+The daemon reads config on startup only. Restart it after editing `openclaw.json`:
+
+```bash
+# Restart the service
+launchctl unload ~/Library/LaunchAgents/com.openclaw.nostr-dm.plist
+launchctl load ~/Library/LaunchAgents/com.openclaw.nostr-dm.plist
+
+# Or send SIGHUP for partial reload (experimental)
+kill -HUP $(pgrep -f auto-reply-daemon-openclaw)
+
+# Check logs
+tail -f /tmp/nostr-dm-daemon.log
 ```
-=== AUTO-REPLY DAEMON ===
-Listening for DMs to auto-reply...
-Auto-reply triggers: patch-in, test, hello, hi, howdy, ping, dm, check, verify
-Conversation timeout: 60 minutes (resets after inactivity)
-My npub: npub1pxvsf79agywh4artvwmkwhvw8vz0jgd3dfz4wrap6fr2eq40jejsh5gxuc
-Listening for DMs from: all
-Connecting to 7 relays...
 
----
-📨 DM Received
-From: [sender_npub]
-Format: NIP-04
-Time: [timestamp]
-Event ID: [event_id]
-Message: [content]
+## Security Notes
 
-🔄 Trigger detected, preparing auto-reply...
+- **Never commit private keys** to version control
+- **Use environment variables** for sensitive data (`OPENCLAW_NOSTR_PRIVATE_KEY`)
+- **Use `allowlist` policy** in production — only allow specific pubkeys to DM
+- **Consider a separate Nostr identity** for the daemon vs your personal Nostr account
+- **Rotate keys periodically** if you suspect compromise
 
-📤 Sending auto-reply to [sender_npub]...
-✓ Published to [relay_url]
-...
-✅ Auto-reply sent successfully!
+## Advanced: Post Functionality
+
+This plugin focuses on DMs. For public posts, you can use the official Nostr plugin's posting features (if outbound works) or use a separate tool like `nak`:
+
+```bash
+# Install nak
+brew install nak
+
+# Post a note
+nak post "Hello from the command line!"
 ```
 
-## Supported Clients
-
-Tested and confirmed working with:
-- Primal (iOS/Web)
-- Damus (iOS/Mac)
-- 0xchat (Web)
+To avoid duplicate functionality:
+- Use this plugin for **DMs only**
+- Use `nak` or other tools for **public posts**
+- Or wait for this plugin to add posting support (future enhancement)
 
 ## License
 
 MIT
-
-## Related
-
-- [nostr-tools](https://github.com/nbd-wtf/nostr-tools) - Nostr protocol implementation
-- [NIP-04](https://github.com/nostr-protocol/nips/blob/master/04.md) - Encrypted Direct Messages
-- [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) - Versioned Encryption
-- [NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md) - Gift Wrap

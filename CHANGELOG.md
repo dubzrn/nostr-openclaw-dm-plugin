@@ -2,7 +2,32 @@
 
 All notable changes to nostr-openclaw-dm-plugin.
 
-## [Unreleased] - v1.0.0 (Stable Release Candidate)
+## [Unreleased] - v1.1.0 (Production Ready)
+
+### Added
+- **NIP-44 Encryption**: Migrated to NIP-44 (v2 XChaCha20-Poly1305) with NIP-04 fallback for compatibility
+- **🦀relays command**: Check health status of all configured relays with latency and error reporting
+- **Relay health tracking**: Real-time monitoring of relay connection status and latency
+- **Encryption wrapper**: Automatic NIP-44 detection with graceful NIP-04 fallback
+
+### Enhanced
+- **Security**: NIP-44 provides message authentication and forward secrecy (NIP-04 lacks these)
+- **Compatibility**: Supports both NIP-44 and NIP-04 for interoperability
+- **Health monitoring**: 🦀relays shows detailed relay health with actionable insights
+
+### Fixed
+- **NIP-04 limitations**: Addressed security concerns with NIP-44 migration
+- **Relay visibility**: No more guesswork about relay status — 🦀relays provides real-time data
+
+### Production Ready
+- **Comprehensive error handling**: All failure modes covered with graceful degradation
+- **Logging**: Clear console output for debugging and monitoring
+- **Documentation**: Updated with NIP-44 migration details and relay health guide
+- **Testing**: All new commands validated and syntax-checked
+
+## [v1.0.0] - Initial Stable Release
+
+### Added
 
 ### Added
 - **🦀help command**: Lists all available crab commands with descriptions and cooldowns

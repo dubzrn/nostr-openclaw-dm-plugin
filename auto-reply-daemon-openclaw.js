@@ -13,12 +13,16 @@
  * - 🦀current task → Get summary of current task via subagent
  * - 🦀new session → Start new chat session (/new)
  * - 🦀restart → Restart OpenClaw gateway
+ * - 🦀relays → Check relay health and status
+ * - 🦀help → Show available commands
  * - Auto-reply triggers: patch-in, test, hello, hi, etc.
+ *
+ * Encryption: NIP-44 (preferred) with NIP-04 fallback for compatibility
  */
 
 const { getPublicKey, finalizeEvent, SimplePool, nip19 } = require('nostr-tools');
 const nip04 = require('nostr-tools/nip04');
-const nip59 = require('nostr-tools/nip59');
+const nip44 = require('nostr-tools/nip44');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
@@ -26,6 +30,10 @@ const path = require('path');
 const os = require('os');
 
 const execAsync = promisify(exec);
+
+// Track relay connection health
+// Structure: relayUrl -> { connected, lastConnected, lastError, latency }
+const relayHealth = new Map();
 
 // ============================================================================
 // RELAY DEDUPLICATION & VALIDATION
@@ -275,7 +283,8 @@ const COMMAND_COOLDOWNS = {
   status: 10 * 1000,  // 10 seconds for status
   task: 30 * 1000,    // 30 seconds for task info
   newSession: 30 * 1000, // 30 seconds for new session
-  help: 5 * 1000      // 5 seconds for help (low overhead)
+  help: 5 * 1000,      // 5 seconds for help (low overhead)
+  relays: 30 * 1000    // 30 seconds for relay health check
 };
 
 // ============================================================================
@@ -295,6 +304,60 @@ const repliedEvents = new Set();
 
 // Track command execution times globally (for safety)
 const commandCooldowns = new Map(); // commandName -> lastExecutionTime
+
+// ============================================================================
+// ENCRYPTION HANDLERS (NIP-44 preferred, NIP-04 fallback)
+// ============================================================================
+
+/**
+ * Decrypt DM using NIP-44 first, fall back to NIP-04
+ * This provides security (NIP-44 v2 XChaCha20-Poly1305) while maintaining
+ * compatibility with clients that only support NIP-04.
+ */
+async function decryptDM(content, privateKey, senderPubkey) {
+  // Try NIP-44 first (preferred for security)
+  try {
+    const decrypted = await nip44.decrypt(content, privateKey, senderPubkey);
+    console.log('  🔒 Decrypted with NIP-44 (v2 encryption)');
+    return decrypted;
+  } catch (error44) {
+    console.log('  ℹ️  NIP-44 decrypt failed, trying NIP-04 fallback...');
+
+    // Fall back to NIP-04
+    try {
+      const decrypted = await nip04.decrypt(content, privateKey, senderPubkey);
+      console.log('  🔓 Decrypted with NIP-04 (legacy encryption)');
+      return decrypted;
+    } catch (error04) {
+      throw new Error(`Decryption failed (both NIP-44 and NIP-04): ${error04.message}`);
+    }
+  }
+}
+
+/**
+ * Encrypt DM using NIP-44 first, fall back to NIP-04
+ * This provides security (NIP-44 v2 XChaCha20-Poly1305) while maintaining
+ * compatibility with clients that only support NIP-04.
+ */
+async function encryptDM(message, privateKey, recipientPubkey) {
+  // Try NIP-44 first (preferred for security)
+  try {
+    const encrypted = nip44.encrypt(privateKey, recipientPubkey, message);
+    console.log('  🔒 Encrypted with NIP-44 (v2 encryption)');
+    return encrypted;
+  } catch (error44) {
+    console.log('  ℹ️  NIP-44 encrypt failed, trying NIP-04 fallback...');
+
+    // Fall back to NIP-04
+    try {
+      const encrypted = await nip04.encrypt(privateKey, recipientPubkey, message);
+      console.log('  🔓 Encrypted with NIP-04 (legacy encryption)');
+      return encrypted;
+    } catch (error04) {
+      throw new Error(`Encryption failed (both NIP-44 and NIP-04): ${error04.message}`);
+    }
+  }
+}
 
 // ============================================================================
 // COMMAND HANDLERS
@@ -434,6 +497,109 @@ async function handleRestartCommand() {
 }
 
 /**
+ * Handle the 🦀relays command
+ * Check relay health and return status summary
+ */
+async function handleRelaysCommand() {
+  try {
+    const results = [];
+    const pool = new SimplePool();
+
+    // Check each configured relay
+    for (const relayUrl of RELAYS) {
+      const startTime = Date.now();
+
+      try {
+        // Try to connect with a timeout
+        const relay = await pool.ensureRelay(relayUrl);
+
+        // Test by querying our own pubkey
+        const myPubkey = getPublicKey(PRIVATE_KEY_HEX);
+
+        // Simple health check: query for recent DMs to our pubkey
+        const events = await pool.list(
+          [relayUrl],
+          [{
+            kinds: [4],
+            '#p': [myPubkey],
+            limit: 1
+          }]
+        );
+
+        const latency = Date.now() - startTime;
+        const isConnected = true;
+
+        // Update relay health tracking
+        relayHealth.set(relayUrl, {
+          connected: true,
+          lastConnected: Date.now(),
+          lastError: null,
+          latency
+        });
+
+        results.push({
+          url: relayUrl,
+          status: '✅ Online',
+          latency: `${latency}ms`,
+          eventsFound: events.length
+        });
+
+      } catch (error) {
+        const latency = Date.now() - startTime;
+        const errorMsg = error.message || 'Connection failed';
+
+        // Update relay health tracking
+        relayHealth.set(relayUrl, {
+          connected: false,
+          lastConnected: null,
+          lastError: errorMsg,
+          latency
+        });
+
+        results.push({
+          url: relayUrl,
+          status: '❌ Offline/Error',
+          latency: `${latency}ms`,
+          error: errorMsg.substring(0, 50) + (errorMsg.length > 50 ? '...' : '')
+        });
+      }
+    }
+
+    // Format results
+    let summary = '📡 Relay Health Summary\n\n';
+
+    const onlineCount = results.filter(r => r.status.includes('Online')).length;
+    const offlineCount = results.length - onlineCount;
+
+    summary += `Total Relays: ${results.length}\n`;
+    summary += `✅ Online: ${onlineCount}\n`;
+    summary += `❌ Offline/Error: ${offlineCount}\n\n`;
+
+    // Detailed status for each relay
+    for (const result of results) {
+      summary += `${result.status} ${result.url}\n`;
+      summary += `   Latency: ${result.latency}`;
+
+      if (result.eventsFound !== undefined) {
+        summary += ` | Recent DMs: ${result.eventsFound}`;
+      }
+
+      if (result.error) {
+        summary += ` | Error: ${result.error}`;
+      }
+
+      summary += '\n';
+    }
+
+    summary += `\n💡 Tip: Healthy relays respond in <1000ms. Consider removing offline relays from config.`;
+
+    return summary;
+  } catch (error) {
+    throw new Error(`Failed to check relay health: ${error.message}`);
+  }
+}
+
+/**
  * Handle the 🦀help command
  * Lists all available crab commands
  */
@@ -459,9 +625,21 @@ Available remote control commands:
   Restart the OpenClaw gateway
   Cooldown: 1 minute
 
+🦀relays
+  Check health status of all configured Nostr relays
+  Shows connection status, latency, and error details
+  Cooldown: 30 seconds
+
 🦀help
   Show this help message
   Cooldown: 5 seconds
+
+---
+
+🔒 Encryption Security:
+- NIP-44 preferred (v2 XChaCha20-Poly1305 encryption)
+- NIP-04 fallback for compatibility with older clients
+- Messages automatically use best available encryption
 
 ---
 
@@ -556,6 +734,11 @@ async function detectAndExecuteCommand(message, senderPubkeyHex) {
       pattern: /🦀help/i,
       name: 'help',
       handler: handleHelpCommand
+    },
+    {
+      pattern: /🦀relays/i,
+      name: 'relays',
+      handler: handleRelaysCommand
     }
   ];
 
@@ -805,7 +988,7 @@ async function main() {
   console.log(`  Relays: ${RELAYS.length}`);
   console.log(`  Auto-reply triggers: ${AUTO_REPLY_TRIGGERS.join(', ')}`);
   console.log(`  Conversation timeout: ${CONVERSATION_TIMEOUT_MS / 60000} minutes`);
-  console.log(`  Commands: 🦀status, 🦀current task, 🦀new session, 🦀restart, 🦀help`);
+  console.log(`  Commands: 🦀status, 🦀current task, 🦀new session, 🦀restart, 🦀relays, 🦀help`);
 
   console.log(`\nListening for DMs...`);
 
@@ -880,14 +1063,10 @@ async function main() {
         console.log(`  Time: ${new Date(event.created_at * 1000).toISOString()}`);
         console.log(`  Event ID: ${event.id}`);
 
-        // Decrypt the DM
+        // Decrypt the DM (NIP-44 preferred, NIP-04 fallback)
         let message;
         try {
-          message = await nip04.decrypt(
-            event.content,
-            PRIVATE_KEY_HEX,
-            senderPubkeyHex
-          );
+          message = await decryptDM(event.content, PRIVATE_KEY_HEX, senderPubkeyHex);
           console.log(`  Message: ${message}`);
         } catch (decryptError) {
           console.error(`  ✗ Decryption failed: ${decryptError.message}`);
@@ -939,11 +1118,14 @@ async function main() {
 
         // Send reply if we have one
         if (replyMessage) {
+          // Encrypt with NIP-44 preferred, NIP-04 fallback
+          const encryptedContent = await encryptDM(replyMessage, PRIVATE_KEY_HEX, senderPubkeyHex);
+
           const replyEvent = finalizeEvent({
             kind: 4,
             created_at: Math.floor(Date.now() / 1000),
             tags: [['p', senderPubkeyHex]],
-            content: await nip04.encrypt(PRIVATE_KEY_HEX, senderPubkeyHex, replyMessage)
+            content: encryptedContent
           }, PRIVATE_KEY_HEX);
 
           console.log(`\n📤 Sending reply to ${senderNpub.substring(0, 20)}...`);

@@ -274,7 +274,8 @@ const COMMAND_COOLDOWNS = {
   restart: 60 * 1000, // 1 minute for restart (takes ~30s)
   status: 10 * 1000,  // 10 seconds for status
   task: 30 * 1000,    // 30 seconds for task info
-  newSession: 30 * 1000 // 30 seconds for new session
+  newSession: 30 * 1000, // 30 seconds for new session
+  help: 5 * 1000      // 5 seconds for help (low overhead)
 };
 
 // ============================================================================
@@ -433,6 +434,47 @@ async function handleRestartCommand() {
 }
 
 /**
+ * Handle the 🦀help command
+ * Lists all available crab commands
+ */
+async function handleHelpCommand() {
+  const helpText = `
+🦀 CLAW COMMANDS
+
+Available remote control commands:
+
+🦀status
+  Run \`openclaw gateway status\` and return full output
+  Cooldown: 10 seconds
+
+🦀current task
+  Get summary of current task/activity via OpenClaw API
+  Cooldown: 30 seconds
+
+🦀new session
+  Start a new chat session (equivalent to /new)
+  Cooldown: 30 seconds
+
+🦀restart
+  Restart the OpenClaw gateway
+  Cooldown: 1 minute
+
+🦀help
+  Show this help message
+  Cooldown: 5 seconds
+
+---
+
+Auto-Reply Triggers:
+patch-in, test, hello, hi, howdy, ping, dm, check, verify
+
+Send any of these words to get an auto-reply with OpenClaw status.
+  `.trim();
+
+  return helpText;
+}
+
+/**
  * Check if a command is on cooldown
  */
 function isCommandOnCooldown(commandName, senderPubkeyHex) {
@@ -509,6 +551,11 @@ async function detectAndExecuteCommand(message, senderPubkeyHex) {
       pattern: /🦀restart/i,
       name: 'restart',
       handler: handleRestartCommand
+    },
+    {
+      pattern: /🦀help/i,
+      name: 'help',
+      handler: handleHelpCommand
     }
   ];
 
@@ -676,6 +723,72 @@ async function checkOpenClawStatus() {
 }
 
 // ============================================================================
+// MEMORY MANAGEMENT
+// ============================================================================
+
+/**
+ * Clean up old state to prevent memory leaks
+ * Should be called periodically (e.g., every 5 minutes)
+ */
+function cleanupOldState() {
+  const now = Date.now();
+  const cleanupThreshold = 24 * 60 * 60 * 1000; // 24 hours
+
+  // Clean up processed events older than 24 hours
+  let eventsCleanedCount = 0;
+  // Note: processedEvents is a Set, we can't easily clean by timestamp
+  // Instead, we'll clear it entirely every 24 hours to prevent unbounded growth
+  const timeSinceStart = now - startTime;
+  if (timeSinceStart > cleanupThreshold && processedEvents.size > 10000) {
+    console.log(`  🧹 Cleaning up processed events (size: ${processedEvents.size})`);
+    // In a production environment, we'd want to track timestamps
+    // For now, we'll clear if it gets too large
+    processedEvents.clear();
+    eventsCleanedCount = processedEvents.size;
+  }
+
+  // Clean up old conversation state
+  let conversationsCleanedCount = 0;
+  for (const [pubkey, state] of senderConversations.entries()) {
+    if (!state.lastReplyTime) {
+      // Never replied, keep but don't clean
+      continue;
+    }
+
+    const timeSinceLastReply = now - state.lastReplyTime;
+    if (timeSinceLastReply > cleanupThreshold) {
+      // No activity in 24 hours, remove
+      senderConversations.delete(pubkey);
+      conversationsCleanedCount++;
+    }
+  }
+
+  // Clean up old relay rate limits
+  for (const [url, rateLimit] of relayRateLimits.entries()) {
+    if (rateLimit.backoffUntil < now) {
+      // Cooldown expired, remove entry
+      relayRateLimits.delete(url);
+    }
+  }
+
+  // Clean up old command cooldowns
+  for (const [command, lastExecuted] of commandCooldowns.entries()) {
+    const timeSinceExec = now - lastExecuted;
+    const cooldownTime = COMMAND_COOLDOWNS[command] || 30000;
+    if (timeSinceExec > cooldownTime * 10) {
+      // 10x cooldown has passed, no need to track
+      commandCooldowns.delete(command);
+    }
+  }
+
+  if (eventsCleanedCount > 0 || conversationsCleanedCount > 0) {
+    console.log(`🧹 Cleanup: ${eventsCleanedCount} events, ${conversationsCleanedCount} conversations`);
+  }
+
+  return { events: eventsCleanedCount, conversations: conversationsCleanedCount };
+}
+
+// ============================================================================
 // MAIN DAEMON LOGIC
 // ============================================================================
 
@@ -692,7 +805,7 @@ async function main() {
   console.log(`  Relays: ${RELAYS.length}`);
   console.log(`  Auto-reply triggers: ${AUTO_REPLY_TRIGGERS.join(', ')}`);
   console.log(`  Conversation timeout: ${CONVERSATION_TIMEOUT_MS / 60000} minutes`);
-  console.log(`  Commands: 🦀status, 🦀current task, 🦀new session, 🦀restart`);
+  console.log(`  Commands: 🦀status, 🦀current task, 🦀new session, 🦀restart, 🦀help`);
 
   console.log(`\nListening for DMs...`);
 
@@ -715,6 +828,10 @@ async function main() {
   let commandsExecuted = 0;
   let autoRepliesSent = 0;
   let startTime = Date.now();
+
+  // Cleanup stats
+  let eventsCleaned = 0;
+  let conversationsCleaned = 0;
 
   // Main polling loop
   setInterval(async () => {
@@ -879,6 +996,15 @@ async function main() {
     console.log(`Processed events tracked: ${processedEvents.size}`);
     console.log(`=============\n`);
   }, 60000);
+
+  // Cleanup old state every 5 minutes
+  setInterval(() => {
+    try {
+      cleanupOldState();
+    } catch (error) {
+      console.error(`✗ Error during cleanup: ${error.message}`);
+    }
+  }, 5 * 60 * 1000);
 }
 
 // Handle graceful shutdown
@@ -890,6 +1016,27 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   console.log('\n\n🛑 Shutting down gracefully...');
   process.exit(0);
+});
+
+// Handle config reload (SIGHUP)
+process.on('SIGHUP', () => {
+  console.log('\n\n🔄 Reloading configuration...');
+  try {
+    const newConfig = getNostrConfig();
+
+    if (newConfig) {
+      config = newConfig;
+      console.log('✓ Configuration reloaded successfully');
+      console.log(`  Policy: ${config.dmPolicy}`);
+      console.log(`  Relays: ${config.relays.length}`);
+      console.log(`  Allowed senders: ${config.allowedSenders.includes('*') ? 'Anyone' : config.allowedSenders.length}`);
+
+      // Note: Relays pool needs to be updated if relays changed
+      // For simplicity, we recommend restart for relay changes
+    }
+  } catch (error) {
+    console.error('✗ Failed to reload configuration:', error.message);
+  }
 });
 
 // Start the daemon

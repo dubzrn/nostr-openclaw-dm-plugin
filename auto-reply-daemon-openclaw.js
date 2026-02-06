@@ -28,6 +28,115 @@ const os = require('os');
 const execAsync = promisify(exec);
 
 // ============================================================================
+// RELAY DEDUPLICATION & VALIDATION
+// ============================================================================
+
+/**
+ * Normalize a relay URL (remove trailing slashes, ensure consistent format)
+ */
+function normalizeRelayUrl(url) {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  // Trim whitespace
+  url = url.trim();
+
+  // Remove trailing slash
+  url = url.replace(/\/+$/, '');
+
+  // Validate WebSocket protocol
+  if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    console.warn(`  ⚠️  Invalid relay protocol: ${url}`);
+    return null;
+  }
+
+  return url;
+}
+
+/**
+ * Deduplicate relay array while preserving order
+ * Returns unique, valid relay URLs
+ */
+function deduplicateRelays(relays) {
+  if (!Array.isArray(relays)) {
+    console.warn('  ⚠️  Relays is not an array, using defaults');
+    return [];
+  }
+
+  const seen = new Set();
+  const uniqueRelays = [];
+
+  for (const relay of relays) {
+    const normalized = normalizeRelayUrl(relay);
+
+    if (!normalized) {
+      console.warn(`  ⚠️  Skipping invalid relay: ${relay}`);
+      continue;
+    }
+
+    if (seen.has(normalized)) {
+      console.log(`  ℹ️  Skipping duplicate relay: ${normalized}`);
+      continue;
+    }
+
+    seen.add(normalized);
+    uniqueRelays.push(normalized);
+  }
+
+  return uniqueRelays;
+}
+
+/**
+ * Deduplicate pubkeys array while preserving order
+ * Handles both npub and hex formats
+ */
+function deduplicatePubkeys(pubkeys) {
+  if (!Array.isArray(pubkeys)) {
+    console.warn('  ⚠️  Pubkeys is not an array');
+    return [];
+  }
+
+  const seen = new Set();
+  const uniquePubkeys = [];
+
+  for (const key of pubkeys) {
+    if (!key || typeof key !== 'string') {
+      console.warn(`  ⚠️  Skipping invalid pubkey`);
+      continue;
+    }
+
+    // Normalize to hex if it's npub
+    let hexKey = key;
+    if (key.startsWith('npub1')) {
+      try {
+        const { data: hex } = nip19.decode(key);
+        hexKey = hex;
+      } catch (error) {
+        console.warn(`  ⚠️  Invalid npub format: ${key}`);
+        continue;
+      }
+    }
+
+    // Validate hex key length (64 hex chars)
+    if (!/^[a-f0-9]{64}$/i.test(hexKey)) {
+      console.warn(`  ⚠️  Invalid hex pubkey: ${key}`);
+      continue;
+    }
+
+    if (seen.has(hexKey)) {
+      console.log(`  ℹ️  Skipping duplicate pubkey: ${key.substring(0, 20)}...`);
+      continue;
+    }
+
+    seen.add(hexKey);
+    uniquePubkeys.push(hexKey);
+  }
+
+  return uniquePubkeys;
+}
+
+// ============================================================================
 // CONFIGURATION LOADER
 // ============================================================================
 
@@ -73,8 +182,8 @@ function getNostrConfig() {
       privateKey = hex;
     }
 
-    // Relays: channel config > defaults
-    const relays = nostrChannel.relays || [
+    // Relays: channel config > defaults (with deduplication)
+    const defaultRelays = [
       'wss://relay.damus.io',
       'wss://relay.primal.net',
       'wss://nos.lol',
@@ -84,26 +193,33 @@ function getNostrConfig() {
       'wss://auth.nostr1.com'
     ];
 
+    const configuredRelays = nostrChannel.relays || defaultRelays;
+    const relays = deduplicateRelays(configuredRelays);
+
+    // If deduplication resulted in empty array, use defaults
+    const finalRelays = relays.length > 0 ? relays : defaultRelays;
+
+    if (relays.length !== configuredRelays.length) {
+      console.log(`  ℹ️  Relay deduplication: ${configuredRelays.length} → ${finalRelays.length} unique relays`);
+    }
+
     // DM Policy
     const dmPolicy = nostrChannel.dmPolicy || 'allowlist';
 
-    // Allowed senders based on policy
+    // Allowed senders based on policy (with deduplication)
     let allowedSenders = [];
     if (dmPolicy === 'allowlist' && nostrChannel.allowFrom) {
-      allowedSenders = nostrChannel.allowFrom.map(key => {
-        if (key.startsWith('npub1')) {
-          const { data: hex } = nip19.decode(key);
-          return hex;
-        }
-        return key;
-      });
+      allowedSenders = deduplicatePubkeys(nostrChannel.allowFrom);
+      if (allowedSenders.length !== nostrChannel.allowFrom.length) {
+        console.log(`  ℹ️  Pubkey deduplication: ${nostrChannel.allowFrom.length} → ${allowedSenders.length} unique pubkeys`);
+      }
     } else if (dmPolicy === 'open' || dmPolicy === 'pairing') {
       allowedSenders = ['*']; // Allow anyone
     }
 
     return {
       privateKey,
-      relays,
+      relays: finalRelays,
       dmPolicy,
       allowedSenders,
       enabled: nostrChannel.enabled !== false,

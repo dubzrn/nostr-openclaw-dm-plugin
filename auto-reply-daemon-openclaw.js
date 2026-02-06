@@ -7,14 +7,25 @@
  * It reads Nostr settings from openclaw.json (channels.nost section)
  * and environment variables, enabling full integration with the
  * OpenClaw web dashboard.
+ *
+ * Commands supported:
+ * - 🦀status → Run openclaw gateway status
+ * - 🦀current task → Get summary of current task via subagent
+ * - 🦀new session → Start new chat session (/new)
+ * - 🦀restart → Restart OpenClaw gateway
+ * - Auto-reply triggers: patch-in, test, hello, hi, etc.
  */
 
 const { getPublicKey, finalizeEvent, SimplePool, nip19 } = require('nostr-tools');
 const nip04 = require('nostr-tools/nip04');
 const nip59 = require('nostr-tools/nip59');
+const { exec } = require('child_process');
+const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+const execAsync = promisify(exec);
 
 // ============================================================================
 // CONFIGURATION LOADER
@@ -130,8 +141,9 @@ const PRIVATE_KEY_HEX = config.privateKey;
 const RELAYS = config.relays;
 const ALLOWED_SENDERS = config.allowedSenders;
 
+// Auto-reply triggers (for basic auto-reply, not commands)
 const AUTO_REPLY_TRIGGERS = ['patch-in', 'test', 'hello', 'hi', 'howdy', 'ping', 'dm', 'check', 'verify'];
-const AUTO_REPLY_MESSAGE = `Auto-reply from ${config.name}: I received your DM! This is an auto-reply confirming that the Nostr patch-in feature is working.`;
+const AUTO_REPLY_MESSAGE = `Auto-reply from ${config.name}: I received your DM! This is an auto-reply confirming that Nostr patch-in feature is working.`;
 
 const POLL_INTERVAL_SECONDS = 60;
 const CONVERSATION_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -140,6 +152,14 @@ const BASE_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 30000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const JITTER_MS = 1000;
+
+// Command cooldowns (in milliseconds)
+const COMMAND_COOLDOWNS = {
+  restart: 60 * 1000, // 1 minute for restart (takes ~30s)
+  status: 10 * 1000,  // 10 seconds for status
+  task: 30 * 1000,    // 30 seconds for task info
+  newSession: 30 * 1000 // 30 seconds for new session
+};
 
 // ============================================================================
 // STATE TRACKING
@@ -152,9 +172,262 @@ const processedEvents = new Set();
 const relayRateLimits = new Map();
 
 // Store per-sender reply tracking and conversation state
-// Structure: senderPubkeyHex -> { lastReplyTime, conversationStart, messageCount, taskStatus }
+// Structure: senderPubkeyHex -> { lastReplyTime, conversationStart, messageCount, lastCommandTime: {commandName: timestamp} }
 const senderConversations = new Map();
 const repliedEvents = new Set();
+
+// Track command execution times globally (for safety)
+const commandCooldowns = new Map(); // commandName -> lastExecutionTime
+
+// ============================================================================
+// COMMAND HANDLERS
+// ============================================================================
+
+/**
+ * Handle the 🦀status command
+ */
+async function handleStatusCommand() {
+  try {
+    const { stdout, stderr } = await execAsync('openclaw gateway status', {
+      timeout: 10000 // 10 second timeout
+    });
+
+    let output = stdout || '';
+    if (stderr && stderr.trim()) {
+      output += `\n[Warning output]\n${stderr}`;
+    }
+
+    if (!output.trim()) {
+      throw new Error('No output received from gateway status command');
+    }
+
+    return `📊 Gateway Status:\n${output}`;
+  } catch (error) {
+    throw new Error(`Failed to get gateway status: ${error.message}`);
+  }
+}
+
+/**
+ * Handle the 🦀current task command
+ * Uses a subagent to gather current task information
+ */
+async function handleCurrentTaskCommand() {
+  try {
+    // Check if we can reach the OpenClaw gateway
+    const statusResponse = await fetch('http://localhost:18789/status', {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!statusResponse.ok) {
+      throw new Error(`Gateway status check failed: HTTP ${statusResponse.status}`);
+    }
+
+    const statusData = await statusResponse.json();
+
+    // Check for active agents
+    if (statusData.activeAgents && statusData.activeAgents.length > 0) {
+      const agents = statusData.activeAgents.map(a => {
+        return `- Agent: ${a.id || 'unknown'} (${a.model || 'default model'})`;
+      }).join('\n');
+
+      return `📋 Current Task Summary:\n\nActive agents: ${statusData.activeAgents.length}\n${agents}`;
+    }
+
+    // Try to get session list for more detail
+    try {
+      const sessionsResponse = await fetch('http://localhost:18789/sessions', {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (sessionsResponse.ok) {
+        const sessionsData = await sessionsResponse.json();
+        if (sessionsData.sessions && sessionsData.sessions.length > 0) {
+          const recentSessions = sessionsData.sessions.slice(0, 3).map(s => {
+            const age = Math.floor((Date.now() - (s.createdAt || Date.now())) / 1000 / 60);
+            return `- Session ${s.id || s.key || 'unknown'} (${age} min ago)`;
+          }).join('\n');
+
+          return `📋 Current Task Summary:\n\nRecent sessions:\n${recentSessions}`;
+        }
+      }
+    } catch (sessionsError) {
+      // Ignore sessions error, fall through
+    }
+
+    return `📋 Current Task Summary:\n\nNo active tasks detected. OpenClaw is ready and waiting for commands.`;
+  } catch (error) {
+    throw new Error(`Failed to get current task: ${error.message}`);
+  }
+}
+
+/**
+ * Handle the 🦀new session command
+ * Starts a new chat session via /new command
+ */
+async function handleNewSessionCommand() {
+  try {
+    // Use the sessions API if available, otherwise note that new session should be initiated manually
+    const response = await fetch('http://localhost:18789/sessions/new', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const sessionKey = data.sessionKey || data.key || data.id || 'new session';
+
+      return `✅ New session started!\n\nSession: ${sessionKey}\n\nYou can now send commands to this fresh session.`;
+    }
+
+    // If API doesn't work, provide guidance
+    throw new Error(`API returned HTTP ${response.status}. Please use /new in your OpenClaw interface to start a new session manually.`);
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Timeout waiting for new session. The gateway may be busy.');
+    }
+    throw new Error(`Failed to start new session: ${error.message}`);
+  }
+}
+
+/**
+ * Handle the 🦀restart command
+ * Restarts the OpenClaw gateway
+ */
+async function handleRestartCommand() {
+  try {
+    const { stdout, stderr } = await execAsync('openclaw gateway restart', {
+      timeout: 60000 // 60 second timeout (restart takes ~30s)
+    });
+
+    let output = stdout || '';
+    if (stderr && stderr.trim()) {
+      output += `\n[Output]\n${stderr}`;
+    }
+
+    return `🔄 Gateway restart initiated!\n\n${output}\n\nNote: It will take approximately 30 seconds for the gateway to come back online. Please wait before sending new commands.`;
+  } catch (error) {
+    throw new Error(`Failed to restart gateway: ${error.message}`);
+  }
+}
+
+/**
+ * Check if a command is on cooldown
+ */
+function isCommandOnCooldown(commandName, senderPubkeyHex) {
+  const now = Date.now();
+  const cooldownTime = COMMAND_COOLDOWNS[commandName] || 30 * 1000; // Default 30s
+
+  // Check global cooldown (prevents everyone from spamming restart)
+  const lastGlobalExecution = commandCooldowns.get(commandName);
+  if (lastGlobalExecution && (now - lastGlobalExecution < cooldownTime)) {
+    const remainingTime = Math.ceil((cooldownTime - (now - lastGlobalExecution)) / 1000);
+    return { onCooldown: true, remainingTime, reason: 'global' };
+  }
+
+  // Check per-sender cooldown (prevents one user from spamming)
+  const senderState = senderConversations.get(senderPubkeyHex);
+  if (senderState && senderState.lastCommandTime) {
+    const lastSenderExecution = senderState.lastCommandTime[commandName];
+    if (lastSenderExecution && (now - lastSenderExecution < cooldownTime)) {
+      const remainingTime = Math.ceil((cooldownTime - (now - lastSenderExecution)) / 1000);
+      return { onCooldown: true, remainingTime, reason: 'sender' };
+    }
+  }
+
+  return { onCooldown: false };
+}
+
+/**
+ * Mark a command as executed (update cooldowns)
+ */
+function markCommandExecuted(commandName, senderPubkeyHex) {
+  const now = Date.now();
+
+  // Update global cooldown
+  commandCooldowns.set(commandName, now);
+
+  // Update per-sender cooldown
+  const senderState = senderConversations.get(senderPubkeyHex);
+  if (!senderState) {
+    senderConversations.set(senderPubkeyHex, {
+      lastReplyTime: null,
+      conversationStart: null,
+      messageCount: 0,
+      lastCommandTime: { [commandName]: now }
+    });
+  } else {
+    if (!senderState.lastCommandTime) {
+      senderState.lastCommandTime = {};
+    }
+    senderState.lastCommandTime[commandName] = now;
+  }
+}
+
+/**
+ * Detect and execute commands from message
+ */
+async function detectAndExecuteCommand(message, senderPubkeyHex) {
+  const commands = [
+    {
+      pattern: /🦀status/i,
+      name: 'status',
+      handler: handleStatusCommand
+    },
+    {
+      pattern: /🦀current task/i,
+      name: 'task',
+      handler: handleCurrentTaskCommand
+    },
+    {
+      pattern: /🦀new session/i,
+      name: 'newSession',
+      handler: handleNewSessionCommand
+    },
+    {
+      pattern: /🦀restart/i,
+      name: 'restart',
+      handler: handleRestartCommand
+    }
+  ];
+
+  for (const command of commands) {
+    if (command.pattern.test(message)) {
+      console.log(`  🔍 Command detected: ${command.name}`);
+
+      // Check cooldowns
+      const cooldownStatus = isCommandOnCooldown(command.name, senderPubkeyHex);
+      if (cooldownStatus.onCooldown) {
+        const cooldownMsg = `⏳ Command on cooldown. Please wait ${cooldownStatus.remainingTime} seconds before trying again.`;
+        console.log(`  ⏳ ${command.name} is on cooldown (${cooldownStatus.remainingTime}s remaining)`);
+        return cooldownMsg;
+      }
+
+      // Execute command
+      try {
+        console.log(`  ⚙️  Executing ${command.name} command...`);
+        const result = await command.handler();
+
+        // Mark as executed
+        markCommandExecuted(command.name, senderPubkeyHex);
+
+        console.log(`  ✅ ${command.name} command completed`);
+        return result;
+      } catch (error) {
+        console.error(`  ✗ ${command.name} command failed:`, error.message);
+        // Return error message instead of throwing, so it can be sent as a DM reply
+        return `❌ Error: ${error.message}`;
+      }
+    }
+  }
+
+  return null; // No command detected
+}
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -243,7 +516,7 @@ function getConversationState(senderPubkeyHex) {
 function shouldSendAutoReply(eventId, senderPubkeyHex) {
   // Check if already replied to this specific event
   if (repliedEvents.has(eventId)) {
-    console.log(`  ℹ️  Already auto-replied to this event`);
+    console.log(`  ℹ️  Already replied to this event`);
     return false;
   }
 
@@ -303,6 +576,7 @@ async function main() {
   console.log(`  Relays: ${RELAYS.length}`);
   console.log(`  Auto-reply triggers: ${AUTO_REPLY_TRIGGERS.join(', ')}`);
   console.log(`  Conversation timeout: ${CONVERSATION_TIMEOUT_MS / 60000} minutes`);
+  console.log(`  Commands: 🦀status, 🦀current task, 🦀new session, 🦀restart`);
 
   console.log(`\nListening for DMs...`);
 
@@ -321,7 +595,9 @@ async function main() {
 
   // Stats tracking
   let totalDmsReceived = 0;
-  let totalAutoRepliesSent = 0;
+  let totalRepliesSent = 0;
+  let commandsExecuted = 0;
+  let autoRepliesSent = 0;
   let startTime = Date.now();
 
   // Main polling loop
@@ -339,7 +615,16 @@ async function main() {
         ]
       );
 
+      // Deduplicate events by ID (same event from multiple relays)
+      const uniqueEvents = new Map();
       for (const event of events) {
+        if (!uniqueEvents.has(event.id)) {
+          uniqueEvents.set(event.id, event);
+        }
+      }
+      const dedupedEvents = Array.from(uniqueEvents.values());
+
+      for (const event of dedupedEvents) {
         // Skip if already processed this event
         if (processedEvents.has(event.id)) {
           continue;
@@ -376,64 +661,84 @@ async function main() {
           continue;
         }
 
-        // Check if message contains a trigger word
-        const hasTrigger = AUTO_REPLY_TRIGGERS.some(trigger =>
-          message.toLowerCase().includes(trigger.toLowerCase())
-        );
+        let replyMessage = null;
+        let isCommand = false;
 
-        if (!hasTrigger) {
-          console.log(`  ℹ️  No trigger word detected, skipping auto-reply`);
-          continue;
+        // Check for commands first
+        const commandResult = await detectAndExecuteCommand(message, senderPubkeyHex);
+        if (commandResult) {
+          replyMessage = commandResult;
+          isCommand = true;
+          console.log(`  🎯 Command response prepared`);
         }
 
-        console.log(`  🔄 Trigger detected, preparing auto-reply...`);
+        // If no command, check for auto-reply triggers
+        if (!replyMessage) {
+          const hasTrigger = AUTO_REPLY_TRIGGERS.some(trigger =>
+            message.toLowerCase().includes(trigger.toLowerCase())
+          );
 
-        // Check if we should send auto-reply
-        if (!shouldSendAutoReply(event.id, senderPubkeyHex)) {
-          continue;
+          if (hasTrigger) {
+            console.log(`  🔄 Trigger detected, preparing auto-reply...`);
+
+            // Check if we should send auto-reply (prevents duplicates)
+            if (!shouldSendAutoReply(event.id, senderPubkeyHex)) {
+              continue;
+            }
+
+            // Check OpenClaw status
+            const status = await checkOpenClawStatus();
+            let statusMessage = '';
+
+            if (status.online) {
+              if (status.hasActiveTask) {
+                statusMessage = `\n\n🔍 OpenClaw Status: Ready with ${status.agentCount} active agent(s)`;
+              } else {
+                statusMessage = `\n\n✅ OpenClaw Status: Ready and waiting`;
+              }
+            } else {
+              statusMessage = `\n\n⚠️ OpenClaw Status: Offline (${status.error})`;
+            }
+
+            replyMessage = AUTO_REPLY_MESSAGE + statusMessage;
+          }
         }
 
-        // Check OpenClaw status
-        const status = await checkOpenClawStatus();
-        let statusMessage = '';
+        // Send reply if we have one
+        if (replyMessage) {
+          const replyEvent = finalizeEvent({
+            kind: 4,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [['p', senderPubkeyHex]],
+            content: await nip04.encrypt(PRIVATE_KEY_HEX, senderPubkeyHex, replyMessage)
+          }, PRIVATE_KEY_HEX);
 
-        if (status.online) {
-          if (status.hasActiveTask) {
-            statusMessage = `\n\n🔍 OpenClaw Status: Ready with ${status.agentCount} active agent(s)`;
-          } else {
-            statusMessage = `\n\n✅ OpenClaw Status: Ready and waiting`;
+          console.log(`\n📤 Sending reply to ${senderNpub.substring(0, 20)}...`);
+
+          try {
+            await publishWithRetry(pool, replyEvent, RELAYS);
+            console.log(`✅ Reply sent successfully!`);
+            console.log(`   Content: ${replyMessage.substring(0, 100)}${replyMessage.length > 100 ? '...' : ''}`);
+
+            // Update state
+            if (isCommand) {
+              commandsExecuted++;
+            } else {
+              autoRepliesSent++;
+              // Update conversation state for auto-replies
+              const state = getConversationState(senderPubkeyHex);
+              state.lastReplyTime = Date.now();
+              state.messageCount++;
+              repliedEvents.add(event.id);
+            }
+
+            totalRepliesSent++;
+
+          } catch (publishError) {
+            console.error(`✗ Failed to send reply: ${publishError.message}`);
           }
         } else {
-          statusMessage = `\n\n⚠️ OpenClaw Status: Offline (${status.error})`;
-        }
-
-        // Create DM reply
-        const replyMessage = AUTO_REPLY_MESSAGE + statusMessage;
-
-        const replyEvent = finalizeEvent({
-          kind: 4,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [['p', senderPubkeyHex]],
-          content: await nip04.encrypt(PRIVATE_KEY_HEX, senderPubkeyHex, replyMessage)
-        }, PRIVATE_KEY_HEX);
-
-        console.log(`\n📤 Sending auto-reply to ${senderNpub.substring(0, 20)}...`);
-
-        try {
-          await publishWithRetry(pool, replyEvent, RELAYS);
-          console.log(`✅ Auto-reply sent successfully!`);
-          console.log(`   Content: ${replyMessage.substring(0, 100)}...`);
-
-          // Update conversation state
-          const state = getConversationState(senderPubkeyHex);
-          state.lastReplyTime = Date.now();
-          state.messageCount++;
-          repliedEvents.add(event.id);
-
-          totalAutoRepliesSent++;
-
-        } catch (publishError) {
-          console.error(`✗ Failed to send auto-reply: ${publishError.message}`);
+          console.log(`  ℹ️  No trigger or command detected, skipping`);
         }
       }
     } catch (error) {
@@ -451,7 +756,9 @@ async function main() {
     console.log(`\n=== STATS ===`);
     console.log(`Uptime: ${hours}h ${minutes}m ${seconds}s`);
     console.log(`DMs received: ${totalDmsReceived}`);
-    console.log(`Auto-replies sent: ${totalAutoRepliesSent}`);
+    console.log(`Replies sent: ${totalRepliesSent}`);
+    console.log(`  Commands executed: ${commandsExecuted}`);
+    console.log(`  Auto-replies: ${autoRepliesSent}`);
     console.log(`Active conversations: ${senderConversations.size}`);
     console.log(`Processed events tracked: ${processedEvents.size}`);
     console.log(`=============\n`);

@@ -140,6 +140,75 @@ const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
 node auto-reply-daemon.js
 ```
 
+## System Commands
+
+The daemon supports remote control commands that return real-time information and perform actions. Commands use the crab emoji 🦀 for easy recognition:
+
+| Command | Description | Cooldown |
+|---------|-------------|----------|
+| `🦀status` | Run `openclaw gateway status` and return full output | 10 seconds |
+| `🦀current task` | Get summary of current task/activity via OpenClaw API | 30 seconds |
+| `🦀new session` | Start a new chat session (equivalent to `/new`) | 30 seconds |
+| `🦀restart` | Restart the OpenClaw gateway | 1 minute |
+
+### Example Usage
+
+Send any of these commands via Nostr DM to get instant responses:
+
+```
+🦀status
+🦀current task
+🦀new session
+🦀restart
+```
+
+### Command Responses
+
+**🦀status** example:
+```
+📊 Gateway Status:
+OpenClaw Gateway v2026.2.3
+Mode: local
+Node: WORKSTATION-af-a2 (192.168.0.236)
+Status: Running
+...
+```
+
+**🦀current task** example:
+```
+📋 Current Task Summary:
+
+Active agents: 1
+- Agent: main (zai/glm-4.7)
+```
+
+**🦀new session** example:
+```
+✅ New session started!
+
+Session: abc123-def456-ghi789
+
+You can now send commands to this fresh session.
+```
+
+**🦀restart** example:
+```
+🔄 Gateway restart initiated!
+
+Restarting OpenClaw Gateway...
+Done.
+
+Note: It will take approximately 30 seconds for the gateway to come back online. Please wait before sending new commands.
+```
+
+### Safety Features
+
+- **Global cooldowns**: Prevent command spam across all users (restart limited to once per minute globally)
+- **Per-sender cooldowns**: Each user has their own rate limit per command
+- **Error handling**: Natural language errors are returned via Nostr DM if commands fail
+- **Timeout protection**: Commands timeout after 10-60 seconds depending on operation
+- **Duplicate prevention**: The same command won't execute twice within cooldown period
+
 ## Auto-Reply Behavior
 
 ### Trigger Words

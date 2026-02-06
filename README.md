@@ -144,6 +144,8 @@ node auto-reply-daemon.js
 
 The daemon supports remote control commands that return real-time information and perform actions. Commands use the crab emoji 🦀 for easy recognition:
 
+> **Security Note**: This plugin currently uses NIP-04 for DM encryption. **Future versions will migrate to NIP-44** for improved security (v2 XChaCha20-Poly1305 encryption). NIP-04 is functional but has known security limitations compared to NIP-44.
+
 | Command | Description | Cooldown |
 |---------|-------------|----------|
 | `🦀status` | Run `openclaw gateway status` and return full output | 10 seconds |

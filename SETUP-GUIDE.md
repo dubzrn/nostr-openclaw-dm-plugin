@@ -278,6 +278,29 @@ To avoid duplicate functionality:
 - Use `nak` or other tools for **public posts**
 - Or wait for this plugin to add posting support (future enhancement)
 
+## Future Enhancements
+
+Planned improvements for future releases:
+
+### NIP-44 Migration (High Priority)
+
+The daemon currently uses **NIP-04** for encrypted DMs. Future versions will migrate to **NIP-44** which provides:
+
+- **Improved Security**: v2 XChaCha20-Poly1305 encryption (vs NIP-04's AES-256-CBC)
+- **Message Authentication**: Prevents tampering and ensures message integrity
+- **Better Performance**: More efficient encryption operations
+- **Forward Secrecy**: Compromise of long-term keys doesn't expose past messages
+
+This is a non-breaking upgrade — both NIP-04 and NIP-44 will be supported during transition.
+
+### Additional Features Considered
+
+- **Public Post Support**: Ability to send public notes (kind:1) via commands
+- **NIP-59 Gift Wrap**: Enhanced privacy for DMs
+- **Session Management**: Better tracking of DM conversations
+- **Relay Health Monitoring**: Automatic detection and removal of failing relays
+- **Config Hot-Reload**: Full config reload without restart (partial support via SIGHUP already)
+
 ## Support
 
 - **Repository**: https://github.com/dubzrn/nostr-openclaw-dm-plugin

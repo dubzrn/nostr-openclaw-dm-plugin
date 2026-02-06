@@ -213,6 +213,8 @@ function getNostrConfig() {
 
     // DM Policy
     const dmPolicy = nostrChannel.dmPolicy || 'allowlist';
+    console.log("  🔍 DEBUG: nostrChannel config loaded");
+
 
     // Allowed senders based on policy (with deduplication)
     let allowedSenders = [];
@@ -266,9 +268,12 @@ if (!config.enabled) {
 const PRIVATE_KEY_HEX = config.privateKey;
 const RELAYS = config.relays;
 const ALLOWED_SENDERS = config.allowedSenders;
+  console.log("  🔍 DEBUG: ALLOWED_SENDERS length=" + String(config.allowedSenders ? config.allowedSenders.length : 0) + "");
+  console.log(\`  🔍 DEBUG: ALLOWED_SENDERS type=\${type(config.allowedSenders)} length=\${len(config.allowedSenders)}\`);
+
+  console.log(`  Config loaded - Allowed senders: ${ALLOWED_SENDERS.length}`);
 
 // Debug logging for config
-console.log(`  Config loaded - Allowed senders: ${ALLOWED_SENDERS.length}`);
 
 // Auto-reply triggers (for basic auto-reply, not commands)
 const AUTO_REPLY_TRIGGERS = ['patch-in', 'test', 'hello', 'hi', 'howdy', 'ping', 'dm', 'check', 'verify'];
@@ -1229,3 +1234,4 @@ main().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
+console.log("  🔍 DEBUG: ALLOWED_SENDERS = " + String(config.allowedSenders) + " | type: " + typeof(config.allowedSenders) + " | length: " + config.allowedSenders.length);
